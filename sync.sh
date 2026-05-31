@@ -27,6 +27,8 @@ rsync -av \
   --exclude='.seeds/' \
   --exclude='.gitattributes' \
   --exclude='sync.sh' \
+  --exclude='.streamlit/' \
+  --exclude='packages.txt' \
   "$SRC" "$DST"
 
 cd "$DST"

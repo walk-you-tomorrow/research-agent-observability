@@ -274,9 +274,9 @@ def query_knowledge(
             "relevance_reason": 관련성 판단 근거,
         }
     """
-    rag = get_rag()
-
     try:
+        rag = get_rag()
+
         # 전용 event loop에서 쿼리 실행 (asyncio.run() 대신)
         # LightRAG 내부의 Lock/PriorityQueue가 동일 event loop에서 동작하도록 보장
         result = _run_async(_query_with_init(rag, query, mode, top_k))
