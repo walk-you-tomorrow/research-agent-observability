@@ -33,7 +33,12 @@ from langfuse import get_client, observe
 
 from anthropic import AsyncAnthropic
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.ollama import ollama_embed
+try:
+    from lightrag.llm.ollama import ollama_embed as _ollama_embed
+    _OLLAMA_AVAILABLE = True
+except (ImportError, Exception):
+    _ollama_embed = None
+    _OLLAMA_AVAILABLE = False
 from lightrag.utils import EmbeddingFunc
 
 from agent.config_loader import get_token_budget
@@ -116,18 +121,21 @@ def _build_embedding_func(config: dict) -> EmbeddingFunc:
     Returns:
         EmbeddingFunc 인스턴스 (nomic-embed-text, 768차원).
     """
+    if not _OLLAMA_AVAILABLE:
+        raise RuntimeError("Ollama를 사용할 수 없습니다. RAG 도구는 로컬 환경에서만 지원됩니다.")
+
     embed_config = config.get("embedding", {})
     embed_model = embed_config.get("model", "nomic-embed-text:latest")
     embed_dim = embed_config.get("dim", 768)
     ollama_host = embed_config.get("host", "http://localhost:11434")
 
-    # ollama_embed는 이미 @wrap_embedding_func_with_attrs로 래핑되어 있으므로
+    # _ollama_embed는 이미 @wrap_embedding_func_with_attrs로 래핑되어 있으므로
     # .func으로 원본 함수에 접근해야 이중 래핑을 방지한다
     return EmbeddingFunc(
         embedding_dim=embed_dim,
         max_token_size=8192,
         func=partial(
-            ollama_embed.func,
+            _ollama_embed.func,
             embed_model=embed_model,
             host=ollama_host,
         ),
