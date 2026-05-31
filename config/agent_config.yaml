@@ -1,0 +1,56 @@
+# config/agent_config.yaml
+llm:
+  model: "claude-haiku-4-5-20251001"
+  temperature: 0.0
+  max_tokens: 4096
+  timeout_seconds: 120
+
+retry:
+  max_gather_retries: 3
+  max_verify_retries: 2
+  max_turns_per_session: 15
+  inter_turn_delay_seconds: 15  # 턴 간 대기 시간 (Rate Limit 50K tokens/min 대응)
+
+context:
+  max_context_tokens: 180000
+  target_utilization: 0.7
+  sufficiency_threshold: 0.7
+
+# --- 토큰 사용량 제어 (Token Budget) ---
+# 각 도구의 반환 결과 크기를 제한한다.
+# test 단계에서는 작게, POC/성능 테스트 시에는 크게 조정한다.
+token_budget:
+  pandas_max_rows: 50         # pandas_query 최대 반환 행수 (test: 50, poc: 200)
+  api_max_rows: 100           # api_query 최대 반환 행수 (test: 100, poc: 500)
+  rag_max_chars: 8000         # RAG 검색 결과 최대 문자수 (test: 8000, poc: 30000)
+
+knowledge_base:
+  data_dir: "knowledge_base/data"
+  docs_dir: "knowledge_base/docs"
+  meta_dir: "knowledge_base/meta"
+
+lightrag:
+  working_dir: "lightrag_storage"
+  llm_model: "claude-haiku-4-5-20251001"
+  chunk_token_size: 1200
+  max_async: 1            # Rate Limit 대응: 동시 LLM 호출 1개
+  query_mode: "mix"       # 기본 검색 모드
+  top_k: 10
+  embedding:
+    model: "nomic-embed-text:latest"   # Ollama 로컬 embedding 모델
+    dim: 768                            # nomic-embed-text 출력 차원
+    host: "http://localhost:11434"      # Ollama 서버 주소
+
+evaluation:
+  auto_evaluate: true
+
+logging:
+  enabled: true
+  log_dir: "logs"
+
+# --- API 호출 최적화 (Token Budget Optimization) ---
+# 4D 평가 품질을 보존하면서 LLM 호출을 줄이는 바이패스 플래그.
+# false로 전환하면 기존(AS-IS) 동작으로 복원된다.
+optimization:
+  bypass_respond_llm: true        # respond_to_user: 템플릿 기반 응답 (LLM 미호출)
+  bypass_verify_interp: true      # verify_result STEP 2: 규칙 기반 해석 검증 (수치 통과 시)

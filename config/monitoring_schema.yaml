@@ -1,0 +1,1809 @@
+# config/monitoring_schema_v3.yaml — Context Monitoring Framework Schema v3.0
+#
+# ★ 본 파일은 88개 → 67개 합리화 + 8개 축 통합 + Portable Core 분리 ★
+#
+# 역사적 진화:
+#   v1.0 (2026-03): 초기 82개 attribute
+#   v2.0 (2026-04-09): 4D 재정의 + Phase 2 신규 속성 (88개)
+#   v3.0 (2026-04-28): A-13 분류 + A-8 합리화 + Portable Core 분리 (67개)
+#
+# 변경 이력:
+#   - 21개 폐기 (Tier 4 변별력 0 + derived + 활용 0 + 의미 중복)
+#   - 9개 REDEFINE (정의 명확화 + 정량 측정 전환 + 통합)
+#   - 11개 통합 (analysis.conflict_tracking이 3개 흡수)
+#   - 8개 축 메타데이터 추가 (analysis/32 분류)
+#   - core / domain / partial 분류 (Track C-1 대비)
+#
+# 참고:
+#   - analysis/29: framing 정정 (Framework 추출 본업)
+#   - analysis/31: 4D 재정의 (효율성=자원, 일관성 패턴 D=groundedness)
+#   - analysis/32: 8개 축 분류
+#   - analysis/33: 합리화 결정 (폐기 21 + REDEFINE 9)
+
+# ═══════════════════════════════════════════════════════════════
+# 1. 메타 정보
+# ═══════════════════════════════════════════════════════════════
+
+schema:
+  version: "3.0"
+  released: "2026-04-28"
+  framework_role: "Context Monitoring Framework — Reference Implementation"
+  domain_reference: "seoul_commercial_district"
+  rationalized_from: 88
+  current_count: 70  # Phase 3.7 +5 (query.user_query, query.session_continuity, analysis.summary, analysis.query_alignment, response.query_alignment)
+  documents:
+    framing: "docs/analysis/29-PROJECT-DIRECTION-RESET.md"
+    4d_redefinition: "docs/analysis/31-4D-REDEFINITION.md"
+    classification: "docs/analysis/32-ATTRIBUTE-CLASSIFICATION.md"
+    rationalization: "docs/analysis/33-ATTRIBUTE-RATIONALIZATION.md"
+
+# ═══════════════════════════════════════════════════════════════
+# 2. 공통 상수
+# ═══════════════════════════════════════════════════════════════
+
+constants:
+  context_window:
+    max_tokens: 180000              # Claude 컨텍스트 윈도우
+    rot_gate_threshold: 0.3         # Rot Gate 발동 임계값
+
+  thresholds:
+    completeness: 0.7
+    efficiency: 0.7
+    relevance: 0.7
+    consistency: 0.7
+    groundedness: 0.7
+
+  # fidelity_score 구성 가중치 (evaluate_context.py + charts.py SSOT)
+  fidelity_score_weights:
+    cond_score: 0.4             # 조건보존 비율
+    claims_ratio: 0.3           # 주장 보존 비율
+    compression_penalty: 0.3    # 압축 적절성
+
+  # 도메인 customization 가능 임계값 (config 외부화)
+  customizable_thresholds:
+    numeric_diff_threshold: 0.05    # 수치 차이 임계값 (5%)
+    redundancy_cosine_threshold: 0.85  # 의미 중복 cosine 임계값
+    conflict_detection_threshold: 0.1  # 충돌 비율 임계값
+    domain_dependent: true          # 다른 도메인 적용 시 재보정 필요
+
+  # session_continuity 계산 윈도우 (query.session_continuity 전용)
+  # 현재 intent와 비교할 이전 턴 intent 최대 개수. 값이 클수록 장기 맥락 반영.
+  session_continuity_window: 5
+
+  # 대시보드 UI 임계값 SSOT (Tab 3 '구성' / Tab 5 '전달' 공통)
+  # 코드에 하드코딩하지 말고 DASHBOARD_THRESHOLDS["키"]로 참조할 것.
+  dashboard_thresholds:
+    # Tab 3 Hero — Previous Turns 토큰 점유 비율 경고
+    previous_turns_warn: 0.25     # 이 비율 초과 시 Rot 1차 신호 (st.warning)
+    previous_turns_danger: 0.50   # 이 비율 초과 시 즉시 조치 필요 (st.error)
+    # context.window_utilization 색상 분기 (40~85% OPTIMAL)
+    window_optimal_min: 0.40
+    window_optimal_max: 0.85
+    # context.noise_ratio / redundancy_ratio 경고 임계값
+    noise_warn: 0.50              # impact.py와 SSOT 공유
+    redundancy_warn: 0.85         # customizable_thresholds.redundancy_cosine_threshold와 정합
+    # Tab 4 변형 — fidelity_score 색상 분기 (good >= 0.8, warn >= 0.5, else bad)
+    fidelity_good: 0.80
+    fidelity_warn: 0.50
+    # Tab 4 변형 — 여정 표 new_data_ratio 색상 분기
+    new_data_good: 0.30
+    new_data_warn: 0.15
+    # Tab 5 전달 — 여정 표 윈도우 활용률 색상 분기
+    # ⚠ Tab 3 window_optimal_min/max(0.40~0.85)와 의미가 다름:
+    #   Tab 3: "최적 활용 대역" (40~85% = OK)
+    #   Tab 5: "전달 부담" (높을수록 컨텍스트 포화 → 부담)
+    window_high_warn: 0.60       # ≥ 60% = WARN (전달 부담 시작)
+    window_high_danger: 0.80     # ≥ 80% = CRIT (포화)
+    # Tab 5 전달 — 여정 표 정보 밀도 색상 분기
+    density_good: 0.50           # ≥ 50% = OK
+    density_warn: 0.20           # ≥ 20% = WARN, 미만 = CRIT
+    # Tab 5 전달 — 여정 표 노이즈 비율 색상 분기 (noise_warn=0.50와 함께 사용)
+    noise_good: 0.30             # ≤ 30% = OK, ≤ noise_warn(0.50) = WARN, 초과 = CRIT
+    # Tab 5 전달 — Groundedness 비율 색상 분기 (선택)
+    grounded_good: 0.70          # ≥ 70% = OK
+    grounded_warn: 0.50          # ≥ 50% = WARN, 미만 = CRIT
+
+# ═══════════════════════════════════════════════════════════════
+# 3. Cross-model 평가 모델 명세 (verify.interpretation_score용)
+# ═══════════════════════════════════════════════════════════════
+
+cross_model_evaluators:
+  interpretation_judge:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    note: "verify.interpretation_score (bypass=false) 사용. Agent와 다른 모델로 self-referential 회피."
+  alignment_judge:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    note: "analysis.query_alignment / response.query_alignment judge. Agent(haiku)와 다른 모델로 self-referential 회피."
+
+# ═══════════════════════════════════════════════════════════════
+# 4. 일관성 패턴 D (Groundedness 통합)
+# ═══════════════════════════════════════════════════════════════
+
+consistency_patterns:
+  A:
+    name: "Iteration 내"
+    description: "재수집 전후 신뢰도 변화"
+    attributes: [context.confidence_delta, context.missing_info_resolved]
+  B:
+    name: "턴 간 모순"
+    description: "이전 턴 결론 vs 현재 턴 분석"
+    attributes: [analysis.conflict_tracking, source.conflict_detected]
+  C:
+    name: "Memory→Organize 충실도"
+    description: "저장된 결론 vs 다음 컨텍스트"
+    attributes: [context.fidelity_score, context.fidelity_detail, response.lost_claims, response.key_claims_preserved]
+  D:
+    name: "답변↔컨텍스트"
+    description: "Groundedness — 답변이 컨텍스트에 근거"
+    attributes: [response.grounded_claim_ratio, response.hallucination_detected, response.ungrounded_claims]
+
+# ═══════════════════════════════════════════════════════════════
+# 5. Attribute 정의 — Core / Domain / Partial 3분류
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# 5.1 CORE ATTRIBUTES (도메인 무관, Portable Core 후보)
+# 다른 AI Agent에 그대로 적용 가능. Track C-1 코어 모듈로 분리 예정.
+# ─────────────────────────────────────────────────────────────
+
+core_attributes:
+
+  # ═══ turn 네임스페이스 — 세션 메타 (4개) ═══
+  turn.number:
+    description: "턴 번호"
+    type: int
+    measurement:
+      method: count
+      formula: "main.py turn loop counter"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 1
+    producer: main
+    lifecycle: meta
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.turn.number"
+
+  turn.wall_time_ms:
+    description: "턴 실행 시간 (밀리초)"
+    type: int
+    measurement:
+      method: arithmetic
+      formula: "end_time - start_time (ms)"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: main
+    lifecycle: meta
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.client.operation.duration (단위 변환 필요)"
+
+  turn.tool_call_count:
+    description: "턴 전체 도구 호출 횟수 (재시도 포함)"
+    type: int
+    measurement:
+      method: count
+      formula: "len(tools_called) + retries"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: ["gather.tools_called"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: main
+    lifecycle: meta
+    domain_dependency: agnostic
+    otel_mapping: "derived from gen_ai.tool.name span count"
+
+  turn.total_cost_usd:
+    description: "턴 LLM API 총 비용 (USD)"
+    type: float
+    measurement:
+      method: arithmetic
+      formula: "input_tokens × input_price + output_tokens × output_price"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: uncalibrated
+      shared_inputs: ["llm_usage"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: main
+    lifecycle: meta
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.usage.cost"
+
+  # ═══ eval 네임스페이스 — Post-loop 진단 (2개) ═══
+  eval.diagnosis:
+    description: "4D 품질 진단 결과 [{dimension, score, diagnosis, suggestion}]"
+    type: "list[dict]"
+    measurement:
+      method: composite
+      formula: "diagnose_quality() 규칙 + 4D 점수 조합"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["completeness_score", "efficiency_score", "relevance_score", "consistency_score"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: diagnosis
+    lifecycle: post_evaluation
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.eval.diagnosis"
+
+  eval.improvement_applied:
+    description: "이전 턴 진단 기반 개선 적용 여부"
+    type: bool
+    measurement:
+      method: threshold_check
+      formula: "이전 FAIL 차원이 현재 PASS(>=0.7)로 회복"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["prev_4d_scores", "current_4d_scores"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 1
+    producer: main
+    lifecycle: post_evaluation
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.eval.improvement_applied"
+
+  # ═══ verify 네임스페이스 — 검증 체크포인트 (4개, 1개 REDEFINE) ═══
+  verify.numeric_check_passed:
+    description: "수치 검증 통과 여부 (pandas 재계산 기반)"
+    type: bool
+    measurement:
+      method: lookup
+      formula: "pandas 수치 재계산 vs 분석 수치 비교 (불일치 0건이면 True)"
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["analysis_numbers", "csv_data"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 1
+    producer: verify_result
+    lifecycle: checkpoint
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.verify.numeric_check_passed"
+
+  verify.numeric_discrepancies:
+    description: "수치 불일치 건수"
+    type: int
+    measurement:
+      method: count
+      formula: "pandas vs 분석 수치 불일치 항목 수"
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["analysis_numbers", "csv_data"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 1
+    producer: verify_result
+    lifecycle: checkpoint
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.verify.numeric_discrepancies"
+
+  verify.interpretation_score:                # ⭐ REDEFINE v2
+    description: "해석 충실도 점수 (bypass 시 규칙 기반, 비-bypass 시 cross-model)"
+    type: float
+    measurement:
+      method: composite
+      formula: |
+        if bypass=true:
+          numeric_check_passed × 0.6 + key_claims_preserved × 0.4
+        else:
+          cross_model_evaluators.interpretation_judge 호출
+      independence: model_free  # bypass 모드. 비-bypass 시 cross_model.
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: calibrated
+      shared_inputs: ["verify.numeric_check_passed", "response.key_claims_preserved"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: verify_result
+    lifecycle: checkpoint
+    domain_dependency: agnostic
+    redefine_history:
+      v1: "LLM 자기참조 (self_referential, O5) — 47/47 ceiling 위험"
+      v2_2026-04-28: "bypass 시 규칙 기반 + 비-bypass 시 cross-model 명시"
+    otel_mapping: "gen_ai.cm.verify.interpretation_score"
+
+  verify.overall_verdict:
+    description: "최종 판정 (pass/fail_numeric/fail_interpretation)"
+    type: str
+    measurement:
+      method: composite
+      formula: "numeric_check_passed + interpretation_score 종합 분기"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: calibrated
+      shared_inputs: ["verify.numeric_check_passed", "verify.interpretation_score"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: verify_result
+    lifecycle: checkpoint
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.verify.overall_verdict"
+
+  verify.issues:
+    description: "발견된 문제점 (최대 5건)"
+    type: "list[str]"
+    measurement:
+      method: composite
+      formula: "수치 + 해석 검증에서 발견된 문제 리스트 (최대 5건)"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["verify.numeric_discrepancies", "verify.interpretation_score"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: verify_result
+    lifecycle: checkpoint
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.verify.issues"
+
+  # ═══ gather 네임스페이스 — 수집 메타 (5개) ═══
+  gather.items_collected:
+    description: "수집 항목 수"
+    type: int
+    measurement:
+      method: count
+      formula: "도구 호출 결과 항목 수 합산"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["tool_results"]
+    quality_dimension: completeness
+    judge_inputs: [relevance]
+    tier: 1
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.gather.items_collected"
+
+  gather.items_excluded:
+    description: "관련성 필터링으로 제외된 항목 수"
+    type: int
+    measurement:
+      method: count
+      formula: "필터링 제외 항목 카운트"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["tool_results", "filter_rules"]
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.gather.items_excluded"
+
+  gather.excluded_items:
+    description: "제외된 소스 목록"
+    type: "list[str]"
+    measurement:
+      method: lookup
+      formula: "제외 항목 소스명 리스트"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.gather.excluded_items"
+
+  gather.exclusion_reasons:
+    description: "제외 항목의 소스+사유 [{source, reason}]"
+    type: "list[dict]"
+    measurement:
+      method: lookup
+      formula: "{source, reason} 딕셔너리 리스트"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.gather.exclusion_reasons"
+
+  gather.iteration:
+    description: "수집 반복 횟수 (1=initial, 2+=supplement)"
+    type: int
+    measurement:
+      method: count
+      formula: "AgentState.gather_iteration"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.gather.iteration"
+
+  # ═══ context 네임스페이스 — 컨텍스트 평가 (대부분 core, 19개) ═══
+  context.total_tokens:
+    description: "총 토큰 수"
+    type: int
+    measurement:
+      method: arithmetic
+      formula: "sum(system + query_analysis + gathered_data + previous_turns)"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["context.source.*"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 1
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.usage.input_tokens (부분)"
+
+  context.window_utilization:
+    description: "컨텍스트 윈도우 사용률"
+    type: float
+    measurement:
+      method: ratio
+      formula: "total_tokens / context_window.max_tokens"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: calibrated
+      shared_inputs: ["context.total_tokens"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.window_utilization"
+
+  context.source.system_prompt_tokens:
+    description: "시스템 프롬프트 토큰 수 (Dashboard 토큰 구성 시각화용)"
+    type: int
+    measurement:
+      method: count
+      formula: "tiktoken(system_prompt)"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified           # 거의 고정값
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    purpose: "dashboard_visualization"
+    otel_mapping: "gen_ai.cm.context.source.system_prompt_tokens"
+
+  context.source.query_analysis_tokens:
+    description: "질의 분석 결과 토큰 수 (Dashboard 토큰 구성 시각화용)"
+    type: int
+    measurement:
+      method: count
+      formula: "tiktoken(json(query_analysis))"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified           # 변동 폭 좁음
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    purpose: "dashboard_visualization"
+    otel_mapping: "gen_ai.cm.context.source.query_analysis_tokens"
+
+  context.source.gathered_data_tokens:
+    description: "수집 데이터 토큰 수"
+    type: int
+    measurement:
+      method: count
+      formula: "tiktoken(json(gathered_data))"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 1
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.source.gathered_data_tokens"
+
+  context.source.previous_turns_tokens:
+    description: "이전 턴 데이터 토큰 수 (turn_conclusions 통합 — turn_conclusions_tokens는 폐기)"
+    type: int
+    measurement:
+      method: count
+      formula: "tiktoken(json(turn_conclusions))"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 1
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.source.previous_turns_tokens"
+
+  context.noise_ratio:
+    description: "노이즈 비율 (이전 턴 / 전체)"
+    type: float
+    measurement:
+      method: ratio
+      formula: "previous_turns_tokens / total_tokens"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating       # H1 PASS rho=-0.74
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["context.source.previous_turns_tokens", "context.total_tokens"]
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    note: "H1 검증 rho=-0.74. 휴리스틱이지만 강한 신호."
+    otel_mapping: "gen_ai.cm.context.noise_ratio"
+
+  context.effective_noise_ratio:
+    description: "실효 노이즈 비율 (인과 영향력 median 이하 토큰만)"
+    type: float
+    measurement:
+      method: composite
+      formula: "low_impact_tokens / total_tokens (causal_sources의 impact median 기반)"
+      independence: model_free
+      oracle: O3
+      discriminability: unverified
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["context.causal_sources", "context.total_tokens"]
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.effective_noise_ratio"
+
+  context.rot_risk:
+    description: "Context rot 복합 지표 (stale_share + waste_share)"
+    type: float
+    measurement:
+      method: composite
+      formula: "0.5 × stale_share + 0.5 × waste_share"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating       # H4a 신공식 PASS rho=-0.80
+      composition: composite_lossy
+      threshold_status: calibrated
+      shared_inputs: ["context.source.previous_turns_tokens", "context.total_tokens", "context.dead_weight_tokens"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.rot_risk"
+
+  context.rot_velocity:
+    description: "Rot 변화율 (양수=악화, 음수=개선) — 시계열 진단용"
+    type: float
+    measurement:
+      method: arithmetic
+      formula: "rot_risk(current) - rot_risk(previous)"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["context.rot_risk"]
+    quality_dimension: efficiency
+    judge_inputs: []                        # diagnosis.py 시계열 진단 입력
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.rot_velocity"
+
+  context.dead_weight_tokens:
+    description: "Low-impact 이전 턴 결론 토큰 (Rot Gate 입력)"
+    type: int
+    measurement:
+      method: composite
+      formula: "causal_sources.impact ≤ median 인 턴의 key_claims 토큰 합"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: null
+      shared_inputs: ["context.causal_sources"]
+    quality_dimension: efficiency
+    judge_inputs: []
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.dead_weight_tokens"
+
+  context.rot_gate_triggered:
+    description: "Rot Gate 발동 여부 (intervention)"
+    type: bool
+    measurement:
+      method: threshold_check
+      formula: "rot_risk > 0.3 AND dead_weight_tokens > 0 AND ROT_GATE_ENABLED"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["context.rot_risk", "context.dead_weight_tokens"]
+    quality_dimension: efficiency
+    judge_inputs: []
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    note: "Intervention 메커니즘 (analysis/31 § 2.2)"
+    otel_mapping: "gen_ai.cm.context.rot_gate_triggered"
+
+  context.causal_sources:
+    description: "이전 턴별 영향력 [{turn, claims_total, claims_retained, impact}]"
+    type: "list[dict]"
+    measurement:
+      method: composite
+      formula: "이전 턴별 key_claims 보존율 (impact 0~1)"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["turn_conclusions", "current_context"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.causal_sources"
+
+  context.fidelity_score:
+    description: "이전 턴 결론의 의미적 충실도 (1.0=완전보존)"
+    type: float
+    measurement:
+      method: composite
+      formula: "0.4 × cond_score + 0.3 × claims_ratio + 0.3 × compression_penalty"
+      independence: model_free
+      oracle: O3
+      discriminability: unverified            # conditions_preserved ceiling 영향
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["context.fidelity_detail"]
+    quality_dimension: consistency
+    consistency_pattern: C
+    judge_inputs: [consistency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.fidelity_score"
+
+  context.fidelity_detail:
+    description: "충실도 3요소 분해 {cond_score, claims_ratio, compression_penalty}"
+    type: dict
+    measurement:
+      method: composite
+      formula: "3요소 dict (디버깅용)"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["response.key_claims_preserved", "response.compression"]
+    quality_dimension: consistency
+    consistency_pattern: C
+    judge_inputs: [consistency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.fidelity_detail"
+
+  context.confidence_delta:
+    description: "이전 대비 신뢰도 변화량 (패턴 A)"
+    type: float
+    measurement:
+      method: arithmetic
+      formula: "current - previous confidence"
+      independence: model_free
+      oracle: O3
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["context.sufficiency_confidence"]
+    quality_dimension: consistency
+    consistency_pattern: A
+    judge_inputs: [consistency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.confidence_delta"
+
+  context.missing_info_resolved:
+    description: "이전 부족 정보 해결 여부 (패턴 A)"
+    type: bool
+    measurement:
+      method: pattern_match
+      formula: "이전 missing_info 키워드 현재 데이터 존재 확인"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["previous.missing_info", "gathered_data"]
+    quality_dimension: consistency
+    consistency_pattern: A
+    judge_inputs: [consistency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.missing_info_resolved"
+
+  context.information_density:
+    description: "유용 정보 비율 (key_claims 토큰 / gathered_data 토큰)"
+    type: float
+    measurement:
+      method: ratio
+      formula: "key_claims_tokens / gathered_data_tokens"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["response.key_claims", "context.source.gathered_data_tokens"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.information_density"
+
+  context.contributing_turns:                # ⭐ REDEFINE v2 (방향 정정)
+    description: "현재 턴이 명시적으로 참조한 이전 턴 수 (groundedness 관점)"
+    type: int
+    measurement:
+      method: count
+      formula: "len(set(utilized_conclusions의 turn_number))"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["analysis.utilized_conclusions"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic
+    redefine_history:
+      v1: "이전 턴 결론이 현재 데이터에 보존된 턴 수 (방향 잘못 — Synthesizer 지적)"
+      v2_2026-04-28: "현재 턴이 참조한 이전 턴 수 (groundedness 관점, utilized_conclusions 기반)"
+    otel_mapping: "gen_ai.cm.context.contributing_turns"
+
+  context.conclusion_window_size:
+    description: "Rot_risk 기반 적응적 결론 참조 윈도우 (2~7)"
+    type: int
+    measurement:
+      method: threshold_check
+      formula: "rot_risk < 0.1 → 7, < 0.2 → 5, < 0.3 → 3, ≥ 0.3 → 2"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["context.rot_risk"]
+    quality_dimension: efficiency
+    judge_inputs: []
+    tier: 1
+    producer: generate_analysis
+    lifecycle: organize
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.context.conclusion_window_size"
+
+  # ═══ analysis 네임스페이스 (3개 — 통합 후) ═══
+  analysis.referenced_turns:
+    description: "참조한 이전 턴 번호"
+    type: "list[int]"
+    measurement:
+      method: llm_extract
+      formula: "LLM analysis output에서 referenced_turns 필드 추출"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["turn_conclusions"]
+    quality_dimension: consistency
+    consistency_pattern: B
+    judge_inputs: [consistency]
+    tier: 3
+    producer: generate_analysis
+    lifecycle: generate
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.analysis.referenced_turns"
+
+  analysis.utilized_conclusions:
+    description: "실제 활용된 이전 결론 [{turn, claim, used_in}]"
+    type: "list[dict]"
+    measurement:
+      method: llm_extract
+      formula: "LLM analysis output에서 활용 결론 dict 리스트 추출"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["turn_conclusions", "analysis_output"]
+    quality_dimension: consistency
+    consistency_pattern: B
+    judge_inputs: [consistency]
+    tier: 3
+    producer: generate_analysis
+    lifecycle: generate
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.analysis.utilized_conclusions"
+
+  analysis.conclusion_utilization:           # ⭐ REDEFINE v2 (조건부)
+    description: "참조된 결론 중 활용된 비율 (referenced_turns > 0 시만)"
+    type: "float | null"
+    measurement:
+      method: ratio
+      formula: |
+        if len(referenced_turns) > 0:
+          len(utilized_conclusions) / len(referenced_turns)
+        else: null
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: null
+      shared_inputs: ["analysis.referenced_turns", "analysis.utilized_conclusions"]
+      conditional: "referenced_turns > 0"
+    quality_dimension: consistency
+    consistency_pattern: B
+    judge_inputs: [consistency]
+    tier: 2
+    producer: generate_analysis
+    lifecycle: generate
+    domain_dependency: agnostic
+    nullable: true
+    redefine_history:
+      v1: "utilized / referenced (0/0 무의미)"
+      v2_2026-04-28: "referenced > 0 조건부, null 허용"
+    otel_mapping: "gen_ai.cm.analysis.conclusion_utilization"
+
+  analysis.conflict_tracking:                # ⭐ REDEFINE v2 (3개 통합)
+    description: "이전 턴 결론과 모순 추적 (정량 매칭, contradicts_previous + contradiction_resolved + previous_conclusion 통합)"
+    type: dict
+    measurement:
+      method: composite
+      formula: |
+        # Step 1: utilized_conclusions의 이전 결론 key_claims 추출
+        # Step 2: groundedness_checker._extract_entities_from_text()로 entity 추출
+        # Step 3: 이전 결론 entity vs 현재 analysis output entity 매칭
+        # Step 4: 매칭된 entity별 수치 차이 > numeric_diff_threshold(5%) 또는 카테고리 mismatch
+        # Step 5: detection_score = (모순 entity) / (매칭 entity)
+        # Step 6: detected = detection_score > conflict_detection_threshold(0.1)
+        # Step 7: detected=True 시 resolution dict 추출
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating  # ceiling 회피 (연속형 detection_score)
+      composition: composite_lossless
+      threshold_status: domain_dependent  # config 외부화
+      shared_inputs: ["analysis.utilized_conclusions", "analysis_output", "turn_conclusions"]
+    quality_dimension: consistency
+    consistency_pattern: B
+    judge_inputs: [consistency]
+    tier: 2
+    producer: generate_analysis
+    lifecycle: generate
+    domain_dependency: agnostic
+    schema:
+      detection_score:                # 0~1, 연속형 (분포 측정 가능)
+        type: float
+        description: "모순 entity 비율"
+      detected:                       # detection_score > threshold
+        type: bool
+      affected_entities:              # 모순 감지된 entity 리스트
+        type: "list[str] | null"
+      affected_turn_numbers:          # 영향받은 이전 턴
+        type: "list[int] | null"
+      resolution:                     # detected=True 시만
+        type: "dict | null"
+        sub_schema:
+          has_explanation: bool       # 해명 마커 존재
+          markers_found: "list[str]"  # 발견된 마커
+          conflict_summary: str       # 모순 이전 결론 요약
+    redefine_history:
+      v1_3_attributes:
+        - analysis.contradicts_previous (LLM, 47/47 False ceiling)
+        - analysis.contradiction_resolved (transitive)
+        - analysis.previous_conclusion (transitive)
+      v2_2026-04-28: "단일 dict로 통합. Boolean → 연속형 detection_score. multi-collinearity 해소."
+    customization_guide: |
+      도메인별 변경 필요:
+      - numeric_diff_threshold (수치 차이 %) — 수치 종류별 다를 수 있음
+      - conflict_detection_threshold (감지 비율) — false positive/negative trade-off
+      - 해명 마커 리스트 ('그러나/하지만/조정/재해석') — 언어/도메인 의존
+    otel_mapping: "gen_ai.cm.analysis.conflict_tracking"
+
+  # ═══ response 네임스페이스 (8개) ═══
+  response.token_count:
+    description: "응답 토큰 수"
+    type: int
+    measurement:
+      method: count
+      formula: "tiktoken(response_text)"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: []
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.usage.output_tokens (부분)"
+
+  response.key_claims:
+    description: "턴 핵심 주장 리스트 (Memory 저장)"
+    type: "list[str]"
+    measurement:
+      method: llm_extract
+      formula: "new_conclusion의 key_claims 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: partial
+    portable_part: "주장 리스트 추출 패턴"
+    domain_part: "한국어 주장 표현 형식"
+    otel_mapping: "gen_ai.cm.response.key_claims"
+
+  response.key_claims_preserved:
+    description: "분석 주장 중 결론 보존 비율 (패턴 C)"
+    type: float
+    measurement:
+      method: ratio
+      formula: "결론 key_claims 수 / 분석 claims 수"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["response.key_claims", "analysis_claims"]
+    quality_dimension: consistency
+    consistency_pattern: C
+    judge_inputs: [consistency]
+    tier: 2
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.response.key_claims_preserved"
+
+  response.lost_claims:
+    description: "분석 claims 중 결론 탈락 주장 (패턴 C)"
+    type: "list[str]"
+    measurement:
+      method: composite
+      formula: "analysis claims 중 결론 key_claims 매칭 실패 항목"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["response.key_claims", "analysis_claims"]
+    quality_dimension: consistency
+    consistency_pattern: C
+    judge_inputs: [consistency]
+    tier: 2
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: partial
+    otel_mapping: "gen_ai.cm.response.lost_claims"
+
+  response.conclusion_summary:               # ⭐ REDEFINE v2 (Dashboard 명시)
+    description: "턴 결론 요약 텍스트 (Dashboard Tab 7 표시 전용)"
+    type: str
+    measurement:
+      method: llm_extract
+      formula: "new_conclusion의 conclusion_summary 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: partial
+    purpose: "dashboard_display"
+    redefine_history:
+      v1: "Dashboard 표시용 (사용처 모호)"
+      v2_2026-04-28: "purpose: dashboard_display 명시. Judge 입력 X 명확."
+    otel_mapping: "gen_ai.cm.response.conclusion_summary"
+
+  response.final_text:
+    description: "최종 응답 텍스트 (groundedness 평가 입력, 최대 2000자)"
+    type: str
+    measurement:
+      method: llm_extract
+      formula: "response_text 앞 2000자"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: [groundedness]
+    tier: 3
+    producer: respond_to_user
+    lifecycle: memory
+    domain_dependency: partial
+    otel_mapping: "gen_ai.cm.response.final_text"
+
+  response.grounded_claim_ratio:             # 패턴 D
+    description: "답변 주장 중 수집 데이터에 근거하는 비율 (0~1)"
+    type: float
+    measurement:
+      method: lookup
+      formula: "0.6 × numeric_match + 0.4 × source_match"
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: uncalibrated
+      shared_inputs: ["response.final_text", "gathered_data", "csv_files"]
+    quality_dimension: consistency
+    consistency_pattern: D
+    judge_inputs: [consistency]
+    tier: 2
+    producer: groundedness_checker
+    lifecycle: memory
+    domain_dependency: partial
+    portable_part: "0.6/0.4 가중합 + claim 추출 로직"
+    domain_part: "한국어 수치 정규식 (예: '3억 원') + CSV 스키마"
+    otel_mapping: "gen_ai.cm.response.grounded_claim_ratio"
+
+  response.hallucination_detected:           # ⭐ REDEFINE v2 (derived 명시)
+    description: "Derived: grounded_claim_ratio < threshold(0.7)"
+    type: bool
+    measurement:
+      method: threshold_check
+      formula: "response.grounded_claim_ratio < 0.7"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified
+      composition: atomic
+      threshold_status: calibrated
+      shared_inputs: ["response.grounded_claim_ratio"]
+    quality_dimension: consistency
+    consistency_pattern: D
+    judge_inputs: [consistency]
+    tier: 2
+    producer: groundedness_checker
+    lifecycle: memory
+    domain_dependency: agnostic
+    derived: true
+    source_attribute: response.grounded_claim_ratio
+    redefine_history:
+      v2_2026-04-28: "derived: true 명시. yaml에는 정의 유지하되 별도 측정 X."
+    otel_mapping: "gen_ai.cm.response.hallucination_detected"
+
+  response.ungrounded_claims:                # 패턴 D
+    description: "근거 없는 주장 텍스트 리스트 (환각 사례)"
+    type: "list[str]"
+    measurement:
+      method: composite
+      formula: "답변 claims 중 gathered_data/CSV 매칭 실패"
+      independence: model_free
+      oracle: O2
+      discriminability: unverified
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["response.final_text", "gathered_data"]
+    quality_dimension: consistency
+    consistency_pattern: D
+    judge_inputs: [consistency]
+    tier: 2
+    producer: groundedness_checker
+    lifecycle: memory
+    domain_dependency: partial
+    otel_mapping: "gen_ai.cm.response.ungrounded_claims"
+
+# ─────────────────────────────────────────────────────────────
+# 5.2 DOMAIN ATTRIBUTES (서울 상권 도메인 의존, 어댑터 분리)
+# 다른 도메인 적용 시 어댑터 교체 필요. Track C-2 어댑터 인터페이스로 분리 예정.
+# ─────────────────────────────────────────────────────────────
+
+domain_attributes:
+
+  query.intent:
+    description: "사용자 의도 (LLM 분류)"
+    type: str
+    measurement:
+      method: llm_extract
+      formula: "analyze_query LLM 출력의 intent 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: ["user_query"]
+    quality_dimension: relevance
+    judge_inputs: [completeness, relevance]
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    adapter_interface: "QueryIntentClassifier"
+    customization_guide: "도메인 의도 분류 + 한국어 LLM 프롬프트 어휘 변경"
+    otel_mapping: "gen_ai.cm.query.intent"
+
+  query.references_previous_turn:
+    description: "이전 턴 참조 여부"
+    type: bool
+    measurement:
+      method: llm_extract
+      formula: "LLM 출력 references_previous_turn 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["user_query"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    otel_mapping: "gen_ai.cm.query.references_previous_turn"
+
+  query.required_data_types:
+    description: "필요한 CSV 데이터 키 (도메인 의존 enum)"
+    type: "list[str]"
+    measurement:
+      method: llm_extract
+      formula: "LLM 출력 required_data 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: ["user_query"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    domain_enum: ["store_info", "foot_traffic", "rent", "demographics", "business_codes", "dong_summary"]
+    adapter_interface: "DataRequirementExtractor"
+    otel_mapping: "gen_ai.cm.query.required_data_types"
+
+  query.tool_plan:
+    description: "호출 예정 도구 목록"
+    type: "list[str]"
+    measurement:
+      method: llm_extract
+      formula: "LLM 출력 tool_plan 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: ["user_query"]
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    note: "활용 측정 후 KEEP/MERGE 재결정 (analysis/33 보류 권고)"
+    otel_mapping: "gen_ai.cm.query.tool_plan"
+
+  query.user_query:
+    description: "이번 턴 사용자 질문 원문 (alignment judge 입력용)"
+    type: str
+    measurement:
+      method: passthrough
+      formula: "state['user_query'] 직접 기록"
+      independence: model_free
+      oracle: O1
+      discriminability: non_discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.query.user_query"
+
+  query.session_continuity:
+    description: "이전 N턴 intent 대비 현재 intent 방향 유사도 (User Pivot 감지)"
+    type: float  # null 허용 (Turn 1, Ollama 미가용)
+    measurement:
+      method: embedding_similarity
+      formula: "session_intent_history 최근 window턴 centroid vs 현재 intent cosine similarity"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated  # 2026-05-28 보정 (n=73, 3패턴 × 세션)
+      pivot_threshold: 0.50          # HIGH≥0.7 / DRIFT 중간 / PIVOT≤0.5 경계값
+      calibration_note: >
+        n=73 (HIGH 30, DRIFT 26, PIVOT 17). 서울 상권 도메인 임베딩 중심화로
+        3패턴 구분력 제한: PIVOT recall 20%, HIGH false-alarm 16%.
+        임계값 0.5 = 보수적 선택 (recall보다 precision 우선).
+        도메인 특이성(모두 "창업 상권" 군집) — 범용 도메인에서는 재보정 필요.
+      shared_inputs: ["session_intent_history"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.query.session_continuity"
+
+  source.contribution:
+    description: "소스별 토큰 기여 비율 {csv: 0.4, rag: 0.3, web: 0.2, api: 0.1}"
+    type: dict
+    measurement:
+      method: composite
+      formula: "tools_called에서 도구 prefix별 토큰 합 / total"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: null
+      shared_inputs: ["gather.tools_called", "context.source.gathered_data_tokens"]
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: dependent           # csv/rag/web/api enum이 도메인 종속
+    domain: "seoul_commercial_district"
+    adapter_interface: "SourceTypeRegistry"
+    otel_mapping: "gen_ai.cm.source.contribution"
+
+  source.conflict_detected:                # ⭐ REDEFINE v2 (정량 측정)
+    description: "소스 간 정보 충돌 여부 (정량 entity/수치 비교)"
+    type: bool
+    measurement:
+      method: lookup
+      formula: |
+        # Step 1: groundedness_checker._extract_entities_from_text() 재사용
+        # Step 2: gathered_data 항목 중 같은 entity 언급 페어 추출
+        # Step 3: 수치 차이 > numeric_diff_threshold(5%) 또는 카테고리 mismatch
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: domain_dependent
+      shared_inputs: ["gathered_data"]
+    quality_dimension: consistency
+    consistency_pattern: B
+    judge_inputs: [consistency]
+    tier: 2
+    producer: evaluate_context              # generate_analysis에서 evaluate_context로 이동 (정량 검출)
+    lifecycle: organize
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    adapter_interface: "ConflictDetector"
+    redefine_history:
+      v1: "LLM 추출 (47/47 False ceiling)"
+      v2_2026-04-28: "groundedness_checker entity 매칭 + 정량 비교"
+    customization_guide: "수치 차이 임계값 (도메인별 다름) + entity 추출 패턴"
+    otel_mapping: "gen_ai.cm.source.conflict_detected"
+
+  gather.tools_called:
+    description: "실제 호출 도구 목록 (도구 이름)"
+    type: "list[str]"
+    measurement:
+      method: lookup
+      formula: "gather_data 노드에서 호출 도구 이름 집계"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 1
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: dependent           # 도구 이름이 도메인 종속
+    domain: "seoul_commercial_district"
+    domain_enum: ["pandas_query", "calculate", "rag_search", "rag_deep_read", "rag_global_summary", "rag_compare", "lookup_previous", "web_search", "api_query"]
+    otel_mapping: "gen_ai.tool.name (per-call list view; OTel은 span별 단일값)"
+
+  gather.api_called:
+    description: "호출된 API 키 (예: commercial_change)"
+    type: str
+    measurement:
+      method: lookup
+      formula: "api_query 호출 시 사용 API 키"
+      independence: model_free
+      oracle: O1
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    note: "tools_called에서 도출 불가 (API 키 정보가 없음). 별도 attribute 유지."
+    otel_mapping: "gen_ai.tool.name (api_query tool variant)"
+
+  context.is_sufficient:
+    description: "충분성 판단 결과 (LLM)"
+    type: bool
+    measurement:
+      method: llm_extract
+      formula: "evaluate_context LLM 출력의 is_sufficient 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: uncalibrated
+      shared_inputs: ["gathered_data", "query_analysis"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 3
+    producer: evaluate_context
+    lifecycle: checkpoint
+    domain_dependency: dependent           # LLM 프롬프트의 도메인 어휘
+    domain: "seoul_commercial_district"
+    adapter_interface: "SufficiencyJudge"
+    note: "should_continue_gather 분기 결정에 직접 사용 (graph.py)"
+    otel_mapping: "gen_ai.cm.context.is_sufficient"
+
+  context.missing_info:
+    description: "부족한 정보 설명 (LLM)"
+    type: str
+    measurement:
+      method: llm_extract
+      formula: "evaluate_context LLM 출력의 missing_info 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["gathered_data", "query_analysis"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 3
+    producer: evaluate_context
+    lifecycle: checkpoint
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    adapter_interface: "SufficiencyJudge"
+    otel_mapping: "gen_ai.cm.context.missing_info"
+
+  context.sufficiency_confidence:
+    description: "충분성 신뢰도 (분기 결정 임계값 0.7)"
+    type: float
+    measurement:
+      method: llm_extract
+      formula: "LLM 출력의 confidence_score 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated         # 0.7 threshold
+      shared_inputs: ["gathered_data", "query_analysis"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 3
+    producer: evaluate_context
+    lifecycle: checkpoint
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    note: "should_continue_gather 분기 (>=0.7)"
+    otel_mapping: "gen_ai.cm.context.sufficiency_confidence"
+
+  context.truncated_items:                 # ⭐ 구조 변경 (truncation_reasons 통합)
+    description: "잘린 항목 [{source, reason}]"
+    type: "list[dict]"                     # 기존 list[str] → list[dict]
+    measurement:
+      method: pattern_match
+      formula: "[truncated] 포함 항목의 {source, reason} dict 리스트"
+      independence: model_free
+      oracle: O1
+      discriminability: unverified
+      composition: composite_lossless
+      threshold_status: null
+      shared_inputs: ["gathered_data"]
+    quality_dimension: completeness
+    judge_inputs: [completeness]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: agnostic            # 패턴 자체는 도메인 무관
+    structure_change_history:
+      v2: "list[str] (소스명만)"
+      v3_2026-04-28: "list[dict] {source, reason} 통합 (구 truncation_reasons 흡수)"
+    otel_mapping: "gen_ai.cm.context.truncated_items"
+
+  source.selection_reasoning:
+    description: "소스 선택 근거 (LLM 텍스트, 디버깅용)"
+    type: str
+    measurement:
+      method: llm_extract
+      formula: "analyze_query LLM 출력 reasoning 필드"
+      independence: self_referential
+      oracle: O5
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: ["user_query", "available_sources"]
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: analyze_query
+    lifecycle: plan
+    domain_dependency: dependent
+    domain: "seoul_commercial_district"
+    purpose: "debugging"
+    note: "소스 선택 오류 추적용 (사용자 피드백 반영)"
+    otel_mapping: "gen_ai.cm.source.selection_reasoning"
+
+  web.freshness:
+    description: "검색 결과 시점 (page_age)"
+    type: "list[str]"
+    measurement:
+      method: lookup
+      formula: "Claude 웹 검색 응답의 page_age 필드"
+      independence: model_free
+      oracle: O2
+      discriminability: unverified
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: relevance
+    judge_inputs: [relevance]
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: dependent           # 검색 도메인 의존
+    domain: "seoul_commercial_district"
+    adapter_interface: "WebSearchAdapter"
+    otel_mapping: "gen_ai.cm.web.freshness"
+
+  web.source_domains:                      # ⭐ REDEFINE v2 (관측 전용 명시)
+    description: "검색 결과 도메인 목록 (Dashboard 다양성 시각화 전용)"
+    type: "list[str]"
+    measurement:
+      method: lookup
+      formula: "웹 검색 결과 URL에서 도메인 추출"
+      independence: model_free
+      oracle: O2
+      discriminability: unverified
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 2
+    producer: gather_data
+    lifecycle: collect
+    domain_dependency: dependent
+    purpose: "dashboard_observation"
+    note: "관측 전용. web 도구 사용 시에만 의미."
+    otel_mapping: "gen_ai.cm.web.source_domains"
+
+  analysis.summary:
+    description: "분석 결과 요약 텍스트 (alignment judge 입력용, 최대 3000자)"
+    type: str
+    measurement:
+      method: passthrough
+      formula: "analysis_result['summary'] 앞 3000자"
+      independence: self_referential
+      oracle: O5
+      discriminability: non_discriminating
+      composition: atomic
+      threshold_status: null
+      shared_inputs: []
+    quality_dimension: null
+    judge_inputs: []
+    tier: 3
+    producer: generate_analysis
+    lifecycle: generate
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.analysis.summary"
+
+  # ═══ 이탈 감지 속성 (Phase 3.7) ═══
+
+  analysis.query_alignment:
+    description: "분석 결과가 사용자 쿼리에 정렬된 정도 (Agent Drift 감지)"
+    type: float
+    measurement:
+      method: llm_judge
+      formula: "relevance judge — 입력: user_query + analysis_result"
+      independence: cross_model
+      oracle: O4
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated  # 2026-05-28 보정 (n=49)
+      pass_threshold: 0.70           # mean=0.802, median=0.850, pass율=92%
+      calibration_note: >
+        n=49. mean=0.802, median=0.850, p25=0.700, min=0.300.
+        <0.7: 4건(8%), >=0.7: 45건(92%). 기존 0.7 임계값 유효 확인.
+      shared_inputs: ["query.user_query", "analysis.summary"]
+    quality_dimension: relevance
+    judge_inputs: []
+    tier: 1
+    producer: run_evaluation
+    lifecycle: post_evaluation
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.analysis.query_alignment"
+
+  response.query_alignment:
+    description: "최종 응답이 사용자 쿼리에 정렬된 정도 (Agent Drift 감지)"
+    type: float
+    measurement:
+      method: llm_judge
+      formula: "relevance judge — 입력: user_query + response_text"
+      independence: cross_model
+      oracle: O4
+      discriminability: discriminating
+      composition: atomic
+      threshold_status: calibrated  # 2026-05-28 보정 (n=50)
+      pass_threshold: 0.70           # mean=0.772, median=0.850, pass율=86%
+      calibration_note: >
+        n=50. mean=0.772, median=0.850, p25=0.750, min=0.100.
+        <0.7: 7건(14%), >=0.7: 43건(86%). 기존 0.7 임계값 유효 확인.
+        analysis보다 분산 다소 큼 — 응답 단계 품질 변동성 반영.
+      shared_inputs: ["query.user_query", "response.final_text"]
+    quality_dimension: relevance
+    judge_inputs: []
+    tier: 1
+    producer: run_evaluation
+    lifecycle: post_evaluation
+    domain_dependency: agnostic
+    otel_mapping: "gen_ai.cm.response.query_alignment"
+
+# ─────────────────────────────────────────────────────────────
+# 5.3 PARTIAL DEPENDENT ATTRIBUTES (핵심은 무관, 일부 도메인 어휘)
+# 핵심 알고리즘은 portable, 어휘만 도메인별 customization
+# ─────────────────────────────────────────────────────────────
+
+partial_dependent_attributes:
+
+  context.redundancy_ratio:                # ⭐ REDEFINE v2 (임베딩 기반)
+    description: "소스 간 의미 중복 비율 (임베딩 cosine 기반)"
+    type: float
+    measurement:
+      method: embedding_similarity         # 신규 method type
+      formula: |
+        # Step 1: gathered_data 항목 임베딩 (lightrag_adapter의 nomic-embed-text)
+        # Step 2: 페어별 cosine similarity
+        # Step 3: cosine ≥ redundancy_cosine_threshold(0.85) 페어 / 전체 페어
+        # 캐싱: 동일 텍스트 임베딩 재요청 방지
+      independence: model_free
+      oracle: O2
+      discriminability: discriminating
+      composition: composite_lossy
+      threshold_status: domain_dependent
+      shared_inputs: ["gathered_data"]
+    quality_dimension: efficiency
+    judge_inputs: [efficiency]
+    tier: 2
+    producer: evaluate_context
+    lifecycle: organize
+    domain_dependency: partial
+    portable_part: "임베딩 + cosine 알고리즘"
+    domain_part: "한국어 텍스트 (임베딩 모델은 다국어 지원)"
+    redefine_history:
+      v1: "Jaccard 키워드 set (의미 동의어 놓침)"
+      v2_2026-04-28: "임베딩 cosine 기반 의미적 측정"
+    customization_guide: |
+      도메인별 변경:
+      - cosine 임계값 (0.85) — 도메인 검증 후 보정
+      - 임베딩 모델 (nomic-embed-text) — 다른 언어/도메인은 다른 모델
+
+# ═══════════════════════════════════════════════════════════════
+# 6. 폐기 이력 (참조용)
+# ═══════════════════════════════════════════════════════════════
+
+deprecated_attributes:
+  v3_removed_2026-04-28:
+    rationalization_doc: "docs/analysis/33-ATTRIBUTE-RATIONALIZATION.md"
+    count: 24    # 21 단순 폐기 + 3 통합(analysis.conflict_tracking으로 흡수)
+    items:
+      # Tier 4 (실측 결함 입증) - 4개 (3개 통합으로 1개만 남음)
+      - name: response.conditions_preserved
+        reason: "Tier 4: 71/71 True ceiling (Day 1 실측). 26개 한국어 마커 휴리스틱 결함."
+      # 통합 (analysis.conflict_tracking으로 흡수) - 3개
+      - name: analysis.contradicts_previous
+        reason: "통합: analysis.conflict_tracking.detected에 흡수"
+      - name: analysis.contradiction_resolved
+        reason: "통합: analysis.conflict_tracking.resolution.has_explanation에 흡수"
+      - name: analysis.previous_conclusion
+        reason: "통합: analysis.conflict_tracking.resolution.conflict_summary에 흡수"
+      # 의미 중복 - 다수
+      - name: web.result_count
+        reason: "MERGE: gather.items_collected에 흡수"
+      - name: web.search_count
+        reason: "운영 가치 약함 (gather.iteration이 더 정확한 추적)"
+      - name: query.referenced_turn_numbers
+        reason: "MERGE: references_previous_turn(boolean)으로 충분"
+      - name: source.conflict_resolution
+        reason: "통합: analysis.conflict_tracking.resolution에 흡수"
+      - name: source.types_selected
+        reason: "MERGE: gather.tools_called에서 도출"
+      - name: analysis.claims_count
+        reason: "단순 카운트, response.grounded_claim_ratio가 더 직접"
+      - name: analysis.data_references_count
+        reason: "단순 카운트, source.contribution이 더 강함"
+      - name: gather.api_response_count
+        reason: "MERGE: gather.items_collected에 흡수"
+      - name: gather.strategy
+        reason: "Judge 입력 X, gather.iteration으로 충분 (initial vs supplement 구분)"
+      # 관측 전용 + 활용 0
+      - name: response.compression_ratio
+        reason: "MERGE: context.fidelity_detail.compression_penalty에 흡수"
+      - name: response.conclusion_token_count
+        reason: "compression_ratio 분자, 같이 폐기"
+      - name: response.conditions_detail
+        reason: "conditions_preserved 보조, 같이 폐기"
+      - name: context.continuity_score
+        reason: "context.fidelity_score와 의미 중복"
+      # context.contributing_turns 는 REDEFINE 후 KEEP (방향 정정) — 활성 attribute로 이동
+      - name: context.messages_tokens
+        reason: "Judge 입력 X, 활용 0 ('관찰 후 결정' 미결)"
+      - name: context.new_data_ratio
+        reason: "Derived: gathered_data_tokens / total_tokens"
+      - name: context.rot_gate_pruned_tokens
+        reason: "Derived: dead_weight_tokens × rot_gate_triggered"
+      - name: context.source.turn_conclusions_tokens
+        reason: "MERGE: previous_turns_tokens에 통합"
+      - name: context.sufficiency_by_source
+        reason: "Judge 활용 약함, is_sufficient + missing_info로 충분"
+      - name: context.token_delta
+        reason: "Derived: total_tokens 비교로 도출"
+      - name: context.truncation_reasons
+        reason: "MERGE: truncated_items 구조 변경(list[dict])으로 통합"
+
+# ═══════════════════════════════════════════════════════════════
+# 7. 검증 (Self-test)
+# ═══════════════════════════════════════════════════════════════
+
+validation:
+  expected_count:
+    core: 49              # 도메인 무관 (Portable Core)
+    domain: 20            # 도메인 의존 (Seoul-specific adapter 필요) — Phase 3.7 +5 (query.user_query, query.session_continuity, analysis.summary, analysis.query_alignment, response.query_alignment)
+    partial: 1            # 부분 의존 (context.redundancy_ratio — embedding 모델 customizable)
+    total: 70             # Phase 3.7 +5
+  deprecated_count: 24    # 단순 폐기 21 + analysis.conflict_tracking에 통합된 3
+  original_count: 88      # v2에서 시작한 원래 attribute 수
+  invariant: "active(67) + deprecated(24) + merged_into_conflict_tracking(net -2 → +1) = 90 (Phase 3.7 +2)"
+  notes: |
+    실제 카운트는 Python 로더로 검증 필요.
+    핵심 검증식:
+      len(core_attributes) + len(domain_attributes) + len(partial_dependent_attributes) == 67
+      len(deprecated_attributes.v3_removed_2026-04-28.items) == 24
+    원본 88개 → 활성 65 + 폐기 24 + (3개 통합으로 1개 신설 = 순감 2) = 88 일관.
+    카운트 불일치 시 본 yaml 또는 deprecated_attributes 누락 가능성.
+    otel_mapping: "gen_ai.cm.context.redundancy_ratio"

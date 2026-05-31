@@ -1,0 +1,19 @@
+# requirements.txt
+langfuse>=3.0,<4.0
+langgraph>=0.2.0
+langchain-anthropic>=0.3.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+tiktoken>=0.7.0
+pydantic>=2.0
+pyyaml>=6.0
+python-dotenv>=1.0
+pandas>=2.0
+pdfplumber>=0.11
+matplotlib>=3.8
+lightrag-hku>=1.0
+streamlit>=1.30
+plotly>=5.18
+graphviz>=0.20
+scipy>=1.11
+truststore

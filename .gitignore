@@ -1,0 +1,37 @@
+# 대용량 데이터 (재구축 필요)
+lightrag_storage/
+rag_storage/
+
+# 로그
+logs/
+lightrag.log
+
+# 환경변수
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 가상환경
+venv*/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Claude Code / ECC 내부 설정
+.claude/
+.overstory/
+.seeds/
+.gitattributes
