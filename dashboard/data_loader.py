@@ -168,6 +168,11 @@ def _build_turn(trace) -> dict:
         resolved = "해결됨" if get_contradiction_resolved_from_metadata(metadata) else "미해결"
         events.append(f"이전 턴과 모순 발생 → {resolved}")
 
+    # alignment score → metadata mirror (_build_turn에서 일관 적용)
+    for _attr in ("analysis.query_alignment", "response.query_alignment"):
+        if _attr in scores and _attr not in metadata:
+            metadata[_attr] = scores[_attr]
+
     return {
         "turn_number": turn_number,
         "trace_id": trace.id,
@@ -187,6 +192,24 @@ def _sort_and_number_turns(turns: list[dict]) -> list[dict]:
         if not turn["turn_number"]:
             turn["turn_number"] = i + 1
     return turns
+
+
+def _mirror_alignment_scores_to_metadata(turn: dict) -> None:
+    """Langfuse Score로 부착된 alignment 점수를 turn['metadata']에 mirror 주입한다.
+
+    배경: `run_evaluation.py`는 `analysis.query_alignment` / `response.query_alignment` 를
+    `langfuse.create_score(...)` 로 부착한다. 그러나 대시보드 차트
+    (`query_alignment_trend`, `build_drift_stats` 등)는 `turn['metadata']` 에서 attribute를
+    찾는다. 두 namespace를 연결하는 mirror 단계.
+
+    Pattern I/II/III 진단을 위한 `query.session_continuity` 는 evaluate_context span의
+    metadata에 이미 부착되어 있으므로 별도 처리 불필요 (enriched data가 자동 병합).
+    """
+    scores = turn.get("scores") or {}
+    meta = turn.setdefault("metadata", {})
+    for attr_key in ("analysis.query_alignment", "response.query_alignment"):
+        if attr_key in scores and attr_key not in meta:
+            meta[attr_key] = scores[attr_key]
 
 
 def _fetch_trace_scores(client: Langfuse, trace_id: str) -> dict:
@@ -261,6 +284,7 @@ def load_session_data(session_id: str) -> list[dict] | None:
             turn["scores"] = score_data["values"]
             turn["score_comments"] = score_data["comments"]
             turn["score_verdicts"] = score_data["verdicts"]
+            _mirror_alignment_scores_to_metadata(turn)
 
         return _sort_and_number_turns(turns)
     except Exception:

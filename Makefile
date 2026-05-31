@@ -44,6 +44,18 @@ test-unit:
 test-validation:
 	$(VENV) pytest tests/validation/ -v
 
+# --- 서비스 (고객 채팅 + 관측 대시보드, 별도 프로세스) ---
+
+.PHONY: chat dashboard
+
+## 고객용 채팅 앱 (기본 포트 8501)
+chat:
+	$(VENV) streamlit run chat_app.py --server.port 8501
+
+## 관측 대시보드 (운영자용, 기본 포트 8502)
+dashboard:
+	$(VENV) streamlit run dashboard/app.py --server.port 8502
+
 # --- 시각화 (예: make visualize S=sess_abc) ---
 
 .PHONY: visualize
@@ -71,6 +83,10 @@ help:
 	@echo "  Unit / Validation (API 불필요)"
 	@echo "    make test-unit              Unit 테스트 (B1-B9, C1-C7)"
 	@echo "    make test-validation        Validation 테스트 (E,F,G)"
+	@echo ""
+	@echo "  서비스 (별도 프로세스)"
+	@echo "    make chat                   고객용 채팅 앱 (포트 8501)"
+	@echo "    make dashboard              관측 대시보드 (포트 8502)"
 	@echo ""
 	@echo "  시각화"
 	@echo "    make visualize S=sess_xxx   세션 시각화"
